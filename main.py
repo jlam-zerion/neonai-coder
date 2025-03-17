@@ -7,6 +7,7 @@ import resource
 import signal
 import boto3
 import dotenv
+import time
 from datetime import datetime
 from botocore.exceptions import ClientError
 from typing import Optional, Dict, List, Tuple
@@ -269,7 +270,7 @@ def confirm(prompt: str, interactive: bool = False) -> bool:
 
 def run_shell_command(cmd: str, skip_confirmation: bool = False, interactive: bool = False) -> Tuple[int, str, str]:
     """Run a shell command after asking for confirmation if in interactive mode."""
-    print("Command to run: {cmd}")
+    print(f"Command to run: {cmd}")
     if not skip_confirmation and interactive:
         if not confirm("Do you want to run this command?", interactive=interactive):
             print("Command canceled by user.")
@@ -387,7 +388,7 @@ def run_command_with_resolution(model:LLM, cmd: str, skip_confirmation: bool = F
             print_progress(f"Error executing command: {err}")
 
             while True:
-                suggestion = resolve_error(model, cmd, resolution_history, original_dir)
+                suggestion = resolve_error(model, cmd, err, resolution_history, original_dir)
                 
                 #clean /tmp/aicoder folder contents but keep tmp folder
                 if os.path.exists("/tmp/aicoder"):
@@ -396,7 +397,7 @@ def run_command_with_resolution(model:LLM, cmd: str, skip_confirmation: bool = F
 
                 if not suggestion or suggestion in attempted_suggestions:
                     model.clean_session()
-                    raise RuntimeError("No new suggestions available. Giving up.\nHistory: \n"+"\n".join([
+                    raise RuntimeError(f"No new suggestions in fixing command {cmd}. Giving up.\nHistory: \n"+"\n".join([
                         f"\tResolution Attempt: {entry['attempted_resolution']}\n"
                         f"\tFailed Command: {entry['failed_command']}\n"
                         f"\tCommand Output: {entry['command_output']}\n"
@@ -434,7 +435,7 @@ def run_command_with_resolution(model:LLM, cmd: str, skip_confirmation: bool = F
         else:
             return code, out, err
             
-def resolve_error(model:LLM, command: str, resolution_history: List, original_directory: str = None) -> str:
+def resolve_error(model:LLM, command: str, original_err:str, resolution_history: List, original_directory: str = None) -> str:
     """
     Analyze command history and suggest alternative commands to achieve the original goal.
     Returns a string of commands separated by ' && ' or None if no solution found.
@@ -469,6 +470,7 @@ def resolve_error(model:LLM, command: str, resolution_history: List, original_di
         "You are a software developer. Analyze the command history and suggest commands to fix the error.\n\n"
         "CONTEXT:\n"
         f"Original Command: {command}\n"
+        f"Original Error: {original_err}\n"
         f"Resolution History:\n{history_text}\n"
         f"Previously Attempted Commands: {', '.join(attempted_commands)}\n"
         f"System Info:\n{system_info}\n\n"
@@ -628,22 +630,29 @@ def determine_work_flow(model:LLM, spec: str) -> dict:
         "1. Return ONLY a valid JSON object with exactly these three keys: 'setup', 'compile', and 'run'\n"
         "2. Each key must map to an array of shell command strings\n"
         "3. Include commands that:\n"
-        "   - setup: MUST include project initialization steps:\n"
-        "     * Project creation commands (tools already installed):\n"
-        "       - Flutter: 'flutter create <name>', 'flutter pub get'\n"
-        "       - Go: 'go mod init <name>', 'go mod tidy'\n"
-        "       - Angular: 'ng new <name> --routing --style=scss --skip-install', 'npm install'\n"
-        "       - React: 'npx create-react-app <name>', 'npm install'\n"
-        "       - Vue: 'vue create <name> --no-git --default', 'npm install'\n"
-        "       - Python: 'pip install <required-packages>'\n"
-        "       - Node.js: 'npm init -y', 'npm install <dependencies>'\n"
-        "     * Configuration files:\n"
-        "       - .gitignore setup\n"
-        "       - Linter configurations\n"
-        "       - Environment files\n"
-        "     * Directory structure creation\n"
-        "     * Asset/resource initialization\n"
-        "     * Database setup if required\n"
+        "   - setup: MUST include minimal but complete project initialization:\n"
+        "     * Install ONLY tools needed for compile and run commands\n"
+        "     * Project creation and dependency installation:\n"
+        "       - Go project:\n"
+        "         CORRECT: 'go mod init example && go get github.com/gin-gonic/gin@v1.9.1 && go mod tidy'\n"
+        "         WRONG: 'mkdir src && touch main.go && go mod init'\n"
+        "       - Node.js project:\n"
+        "         CORRECT: 'npm init -y && npm install express@4.18.2 && npm install eslint --save-dev && eslint --init'\n"
+        "         WRONG: 'mkdir src && touch index.js && npm init'\n"
+        "       - Python project:\n"
+        "         CORRECT: 'python -m venv venv && . venv/bin/activate && pip install fastapi==0.104.1 pylint'\n"
+        "         WRONG: 'mkdir src tests && touch requirements.txt'\n"
+        "       - Flutter project:\n"
+        "         CORRECT: 'flutter create myapp && cd myapp && flutter pub add provider:^6.0.5 http:^1.1.0'\n"
+        "         WRONG: 'mkdir lib && touch lib/main.dart'\n"
+        "       - Angular project:\n"
+        "         CORRECT: 'ng new myapp --routing --style=scss && cd myapp && npm install @angular/material@16.2.12'\n"
+        "         WRONG: 'mkdir src/app && touch src/app/app.component.ts'\n"
+        "     * Essential file creation ONLY through framework commands:\n"
+        "       CORRECT: 'git init && npx gitignore node'\n"
+        "       WRONG: 'touch .gitignore'\n"
+        "       CORRECT: 'npm init -y && npx dotenv-init'\n"
+        "       WRONG: 'touch .env'\n"
         "   - compile: ONLY include static analysis and syntax checking\n"
         "     * Example: 'flutter analyze' for Flutter projects\n"
         "     * Example: 'pylint' or 'mypy' for Python\n"
@@ -659,6 +668,35 @@ def determine_work_flow(model:LLM, spec: str) -> dict:
         "5. Handle dependencies in correct order\n"
         "6. Use appropriate flags for non-interactive execution\n"
         "7. Include cleanup commands if needed\n\n"
+        "SETUP PHASE RULES:\n"
+        "1. Tool and Dependency Installation:\n"
+        "   - Install ALL required packages with exact versions:\n"
+        "     * Flutter: 'flutter pub add package:^version'\n"
+        "     * Node.js: 'npm install package@version'\n"
+        "     * Python: 'pip install package==version'\n"
+        "     * Go: 'go get package@version'\n"
+        "   - Include BOTH production and development dependencies:\n"
+        "     * Production: Required for running the application\n"
+        "     * Development: Required for compilation/analysis\n"
+        "   - Examples:\n"
+        "     * Flutter: 'flutter pub add provider:^6.0.5 && flutter pub add dev:flutter_lints:^2.0.3'\n"
+        "     * Node.js: 'npm install express@4.18.2 && npm install --save-dev eslint@8.54.0'\n"
+        "     * Python: 'pip install fastapi==0.104.1 pylint==3.0.2'\n"
+        "     * Go: 'go get github.com/gin-gonic/gin@v1.9.1 && go get -u golang.org/x/lint/golint@latest'\n"
+        "2. Project Creation:\n"
+        "   - Use ONLY framework commands for creating structure\n"
+        "   - Framework commands will create necessary folders:\n"
+        "     * 'go mod init' creates go.mod\n"
+        "     * 'flutter create' creates lib/ and other folders\n"
+        "     * 'ng new' creates src/app/ and other folders\n"
+        "   - NO manual mkdir/touch commands\n"
+        "3. Configuration Files:\n"
+        "   - Create ONLY through specialized tools:\n"
+        "     * 'npx gitignore' for .gitignore\n"
+        "     * 'npx dotenv-init' for .env\n"
+        "     * 'eslint --init' for .eslintrc\n"
+        "     * 'prettier --init' for .prettierrc\n"
+        "   - NO manual touch commands\n\n"
         f"Technical Specification:\n```{spec}```\n\n"
         f"Host Environment Details:\n```{env_details}```"
     )
@@ -832,9 +870,10 @@ def generate_code_files(model:LLM, spec, update_filedescription=None) -> dict:
 
     # Query the model for the list of files to generate along with brief descriptions.
     list_prompt = (
-        "You are an expert software developer tasked with analyzing a technical specification and existing project structure.\n\n"
+        "You are an expert software developer tasked with analyzing a technical specification and planning a complete project structure.\n\n"
         "CONTEXT:\n"
-        f"Current Project Structure:\n{project_structure}\n\n"
+        f"1. Technical Specification:\n{spec}\n"
+        f"2. Current Project Structure:\n{project_structure}\n\n"
         "INSTRUCTIONS:\n"
         "1. Return ONLY a valid JSON object with exactly this structure:\n"
         "{\n"
@@ -848,73 +887,118 @@ def generate_code_files(model:LLM, spec, update_filedescription=None) -> dict:
         '                - External dependencies and imports\n'
         '                - Data structures and models\n'
         '                - Error handling requirements\n'
-        '                - Integration points with other files",\n'
-        '            "status": "new|exists|modify"\n'
+        '                - Integration points with other files"\n'
         '        }\n'
         "    ]\n"
         "}\n\n"
         "REQUIREMENTS:\n"
-        "1. Project Structure Analysis:\n"
-        "   - Examine current structure from setup phase\n"
-        "   - For Flutter: check lib/, test/, etc.\n"
-        "   - For Angular: check src/app/, components/\n"
-        "   - For React: check src/, public/\n"
-        "   - For Python: check package structure\n"
-        "2. File Status Determination:\n"
-        "   - 'new': File doesn't exist and needs creation\n"
-        "   - 'modify': File exists but needs modifications\n"
-        "3. Path Requirements:\n"
-        "   - Use relative paths from project root\n"
-        "   - Follow framework conventions:\n"
-        "     * Flutter: lib/screens/, lib/widgets/\n"
-        "     * Angular: src/app/components/, src/app/services/\n"
-        "     * React: src/components/, src/hooks/\n"
-        "     * Python: src/, tests/\n"
-        "4. Description Requirements:\n"
-        "   - Core functionality and purpose\n"
-        "   - Required classes, methods, functions\n"
-        "   - Data structures and types\n"
+        "1. File Planning:\n"
+        "   - List ALL files needed for the project\n"
+        "   - Include files mentioned in spec AND supporting files\n"
+        "   - Treat each file as new/empty when writing descriptions\n"
+        "   - Generate complete descriptions regardless of existing content\n"
+        "2. Path Requirements:\n"
+        "   - For paths mentioned in spec: Use exactly as specified\n"
+        "   - For supporting files:\n"
+        "     * Follow framework conventions if technology is clear:\n"
+        "       - Flutter: lib/screens/, lib/widgets/\n"
+        "       - Angular: src/app/components/, services/\n"
+        "       - React: src/components/, hooks/\n"
+        "       - Python: src/, tests/\n"
+        "     * Use logical grouping (e.g., models/, utils/)\n"
+        "     * Last resort: Place in root directory\n"
+        "3. Description Requirements:\n"
+        "   - Provide complete implementation blueprint:\n"
+        "     * Core functionality and purpose\n"
+        "     * ALL required classes and methods\n"
+        "     * ALL required functions with parameters\n"
+        "     * Data structures and types\n"
+        "     * State management approach\n"
+        "     * Business logic and algorithms\n"
         "   - Dependencies and imports:\n"
-        "     * ONLY use dependencies from specification\n"
+        "     * ONLY use dependencies listed in specification\n"
         "     * NO additional third-party packages\n"
         "     * Standard library imports must be justified\n"
-        "   - Error handling requirements\n"
-        "   - Integration points with other files\n"
-        "   - Important algorithms or business logic\n"
-        "   - Configuration or environment requirements\n"
-        "5. Framework-Specific Handling:\n"
-        "   - Flutter:\n"
-        "     * Respect existing lib/main.dart\n"
-        "     * Add screens to lib/screens/\n"
-        "     * Add widgets to lib/widgets/\n"
-        "   - Angular:\n"
-        "     * Check existing components\n"
-        "     * Follow module structure\n"
-        "     * Respect routing setup\n"
-        "   - React:\n"
-        "     * Maintain component hierarchy\n"
-        "     * Check for existing hooks\n"
-        "     * Respect routing structure\n"
-        "   - Python:\n"
-        "     * Follow package structure\n"
-        "     * Maintain module organization\n"
-        "6. NO explanation text outside JSON\n"
-        "7. Dependencies MUST be from spec\n\n"
-        f"Technical Specification:\n{spec}\n"
+        "   - Error handling:\n"
+        "     * Expected error scenarios\n"
+        "     * Error handling strategies\n"
+        "     * Recovery mechanisms\n"
+        "   - Integration details:\n"
+        "     * Input/Output contracts\n"
+        "     * Data flow between files\n"
+        "     * API interfaces and protocols\n"
+        "     * Event handling and callbacks\n"
+        "4. Structure Guidelines:\n"
+        "   - Group related functionality logically\n"
+        "   - Follow framework/language best practices\n"
+        "   - Avoid deep nesting unless justified\n"
+        "   - Consider maintainability and scalability\n"
+        "5. NO explanation text outside JSON\n"
+        "6. Make practical decisions when spec is unclear\n\n"
     )
-    print_progress("Querying model for list of files to generate with descriptions...")
-    response = model.get_model_response(list_prompt)
-    try:
-        result = json.loads(response, strict=False)
-        files_list = result.get("files", [])
-        if not files_list:
-            print("No files listed in the model response.")
-            return
-    except Exception as e:
-        print("Error parsing file list from model response:", e)
-        print("Model response was:")
-        print(response)
-        return
+
+    need_continue = True
+    attempt_count = 0
+    last_error = None
+    while need_continue and attempt_count < 5:  # Add max attempts to prevent infinite loops
+        attempt_count += 1
+        
+        # Add error context for subsequent attempts
+        if attempt_count > 1 and last_error:
+            error_context = (
+                "PREVIOUS ATTEMPT FAILED:\n"
+                f"- Attempt #{attempt_count-1} failed to return valid JSON\n"
+                f"- Error: {last_error}\n"
+                "- Remember: Return ONLY a valid JSON object with no additional text\n\n"
+            )
+            current_prompt = error_context + list_prompt
+        else:
+            current_prompt = list_prompt
+
+        print_progress(f"Querying model for list of files to generate with descriptions (attempt {attempt_count})...")
+        response = model.get_model_response(current_prompt)
+        
+        try:
+            # Try to extract JSON if there's additional text
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = response
+                
+            result = json.loads(json_str, strict=False)
+            files_list = result.get("files", [])
+            
+            if not files_list:
+                last_error = "Empty files list returned"
+                need_continue = True
+            else:
+                # Validate file entries
+                valid_entries = True
+                for file_entry in files_list:
+                    if not isinstance(file_entry, dict):
+                        valid_entries = False
+                        last_error = "Invalid file entry format - not a dictionary"
+                        break
+                    if "path" not in file_entry or "description" not in file_entry:
+                        valid_entries = False
+                        last_error = "Invalid file entry format - missing 'path' or 'description'"
+                        break
+                
+                need_continue = not valid_entries
+
+        except Exception as e:
+            last_error = str(e)
+            need_continue = True
+            
+        if need_continue and attempt_count < 5:
+            print_progress(f"Invalid response (attempt {attempt_count}). Retrying in {attempt_count*5} seconds...")
+            time.sleep(attempt_count*5)
+    
+    if need_continue:
+        raise Exception(f"Failed to get valid file list after {attempt_count} attempts. Last error: {last_error}")
+
 
     # Build a directory tree from the file paths.
     def build_tree(paths):
@@ -1215,9 +1299,13 @@ def syntax_error_handling(model:LLM, error_item, spec, project_structure, files_
                     if not cmd:
                         continue
                     print_progress(f"Executing command for compilation error: {cmd}")
-                    code, out, err = run_command_with_resolution(model, cmd)
-                    if code != 0:
-                        print_progress(f"Package update failed: {err}")
+                    try:
+                        code, out, err = run_command_with_resolution(model, cmd)
+                        if code != 0:
+                            print_progress(f"Package update failed for {file_path}: {err}")
+                            return
+                    except Exception as e:
+                        print_progress(f"Package update failed for {file_path}: {e}")
                         return
                 print_progress("Finsished command updates.")
                 return

@@ -256,7 +256,7 @@ class Claude(LLM):
                 
         # Set default configuration if not provided.
         config = {
-            'model': claude_config.get('model', 'claude-3-opus-20240229'),
+            'model': claude_config.get('model', 'claude-3-7-sonnet-20250219'),
             'max_tokens': claude_config.get('max_tokens', 4096),
             'temperature': claude_config.get('temperature', 0.5)
         }
