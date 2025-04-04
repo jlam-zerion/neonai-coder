@@ -123,6 +123,29 @@ def clean_status(table, project_id:str):
         }
     )
 
+def update_model_status(table, project_id:str, call_count:int, call_limit:int, verbose:bool=True):
+    update_expression = 'SET #mcc = :model_call_count, #mcl = :model_call_limit'
+    expression_names = {
+        '#mcc': 'model_call_count',
+        '#mcl': 'model_call_limit'
+    }
+    expression_values = {
+        ':model_call_count': call_count,
+        ':model_call_limit': call_limit
+    }
+
+    table.update_item(
+        Key={
+            'project_id': project_id
+        },
+        UpdateExpression=update_expression,
+        ExpressionAttributeNames=expression_names,
+        ExpressionAttributeValues=expression_values
+    )
+
+    if verbose:
+        print(f"Model Call count: {call_count}/{call_limit}")
+
 def update_message(table, project_id:str, message:str, progress:str=None, verbose:bool=True):
     # Add the key of message status to the project_id key table
     update_expression = 'SET #msg = :message, #lu = :lastupdate'
@@ -1472,7 +1495,10 @@ def main(project_id: str, file_name: str = None):
         _update_message(f"Syncing input file (Directory: {s3_input_prefix})...", "preparing")
         download_from_s3(s3_client, bucket, s3_input_prefix, input_directory)
 
-        model = get_model(api_key=os.getenv("ANTHROPIC_API_KEY"), model_type='claude')
+        def model_callback(call_count, call_limit):
+            update_model_status(table, project_id, call_count, call_limit, verbose=False)
+        
+        model = get_model(api_key=os.getenv("ANTHROPIC_API_KEY"), model_type='claude', model_call_cb=model_callback, call_limit=int(os.getenv("MODEL_CALL_LIMIT", 50)))
 
         #Start here
         os.chdir(output_directory)
