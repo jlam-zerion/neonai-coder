@@ -2,6 +2,29 @@ import os
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union, Callable
 
+class TqdmProgressCallback:
+    def __init__(self, update_status_fn=None):
+        self.current = 0
+        self.total = 0
+        self.description = ""
+        self.update_status_fn = update_status_fn
+
+    def update(self, n=1):
+        self.current += n
+        if self.update_status_fn:
+            self.update_status_fn(self.get_progress())
+
+    def set_total(self, total):
+        self.total = total
+
+    def set_description(self, desc):
+        self.description = desc
+        if self.update_status_fn:
+            self.update_status_fn(self.get_progress())
+
+    def get_progress(self) -> str:
+        return f"{self.description}: {self.current}/{self.total}"
+
 class LLM(ABC):
     """
     Abstract base class for Language Learning Models
@@ -42,7 +65,8 @@ class LLM(ABC):
                             verbose: bool = False,
                             logging: bool = False,
                             gemini_config: Optional[dict] = None,
-                            claude_config: Optional[dict] = None) -> str:
+                            claude_config: Optional[dict] = None,
+                            progress_callback: Optional[TqdmProgressCallback] = None) -> str:
         """
         Get a response from the model based on file contents and a prompt
         
@@ -227,7 +251,8 @@ class Claude(LLM):
                            files: Optional[Union[str, List[str]]] = None, 
                            verbose: bool = False,
                            logging: bool = False,
-                           claude_config: Optional[dict] = None) -> str:
+                           claude_config: Optional[dict] = None,
+                           progress_callback: Optional[TqdmProgressCallback] = None) -> str:
         """
         Get a response from Claude model without maintaining conversation history.
         If the combined prompt (including file contents) is too long,
@@ -266,7 +291,7 @@ class Claude(LLM):
         if claude_config is None:
             claude_config = {}
         
-        super().get_model_response(prompt, files, verbose, claude_config=claude_config)
+        super().get_model_response(prompt, files, verbose, claude_config=claude_config, progress_callback=progress_callback)
 
         # Set default configuration if not provided
         config = {
@@ -288,6 +313,10 @@ class Claude(LLM):
             # We will store tuples of (file_path, processed_content) so that
             # later if summarization is needed we know which file each chunk belongs to.
             file_entries = []
+
+            if progress_callback:
+                progress_callback.set_total(len(files))
+                progress_callback.set_description("Processing file contents")
 
             # Use tqdm to show progress as we process each file.
             for file_path in (tqdm(files, desc="Processing file contents", unit="file", disable=not verbose) if verbose else files):
@@ -341,7 +370,10 @@ class Claude(LLM):
                     processed_content = f"[Error reading {file_path}: {str(e)}]"
                     self._file_cache[file_path] = {'mtime': None, 'processed': processed_content}
                     file_entries.append((file_path, processed_content))
-
+                if progress_callback:
+                    progress_callback.update(1)
+            
+            # Combine all file contents
             file_contents = [entry[1] for entry in file_entries]
             file_contents_text = "File contents:\n" + "\n---\n".join(file_contents)
             # Define the maximum token threshold for file contents (adjust as needed)
@@ -352,6 +384,10 @@ class Claude(LLM):
                 if verbose:
                    log_message("File contents exceed token limit; summarizing each file's content to reduce length.")
 
+                if progress_callback:
+                    progress_callback.current = 0
+                    progress_callback.set_total(len(file_entries))
+                    progress_callback.set_description("Summarizing file contents")
                 summarized_contents = []
 
                 if self._call_limit - self._call_count < len(file_entries):
@@ -428,7 +464,6 @@ class Claude(LLM):
         No-op method for session cleanup
         """
         super().clean_session()
-
 
 def get_model(api_key: Optional[str] = None, model_type: str = "gemini", call_limit: int = 50, model_call_cb: Optional[Callable[[int, int], None]] = None) -> LLM:
     """
