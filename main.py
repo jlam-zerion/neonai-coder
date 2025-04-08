@@ -1498,7 +1498,7 @@ def main(project_id: str, file_name: str = None):
         def model_callback(call_count, call_limit):
             update_model_status(table, project_id, call_count, call_limit, verbose=False)
         
-        model = get_model(api_key=os.getenv("ANTHROPIC_API_KEY"), model_type='claude', model_call_cb=model_callback, call_limit=int(os.getenv("MODEL_CALL_LIMIT", 50)))
+        model = get_model(api_key=os.getenv("ANTHROPIC_API_KEY"), model_type='bedrock', model_call_cb=model_callback, call_limit=int(os.getenv("MODEL_CALL_LIMIT", 50)))
 
         #Start here
         os.chdir(output_directory)
