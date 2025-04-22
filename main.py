@@ -14,6 +14,8 @@ from typing import Optional, Dict, List, Tuple
 from model import get_model, LLM
 import re
 
+EXCLUDED_DIRECTORIES = ["node_modules", "venv", ".git", "__pycache__", "build", "dist"]
+
 def signal_handler(signum, frame):
     """Handle termination signals by raising KeyboardInterrupt"""
     raise KeyboardInterrupt()
@@ -85,8 +87,12 @@ def upload_to_s3(s3_client, local_dir: str, bucket: str, prefix: str):
     """
     Upload local directory to S3 maintaining directory structure
     """
+
     try:
         for root, _, files in os.walk(local_dir):
+            if any(excluded_dir in root.split(os.sep) for excluded_dir in EXCLUDED_DIRECTORIES):
+                continue
+
             for file in files:
                 local_path = os.path.join(root, file)
                 # Calculate relative path
@@ -880,6 +886,9 @@ def generate_code_files(model:LLM, spec, update_filedescription=None) -> dict:
     def build_directory_tree(start_dir="."):
         tree_lines = []
         for root, dirs, files in os.walk(start_dir):
+            if any(excluded_dir in root.split(os.sep) for excluded_dir in EXCLUDED_DIRECTORIES):
+                continue
+
             level = root.replace(start_dir, "").count(os.sep)
             indent = " " * 4 * level
             tree_lines.append(f"{indent}{os.path.basename(root)}/")
@@ -1122,6 +1131,9 @@ def compile_handle(model:LLM, spec, commands, file_descriptions) -> None:
     def build_directory_tree(start_dir="."):
         tree_lines = []
         for root, dirs, files in os.walk(start_dir):
+            if any(excluded_dir in root.split(os.sep) for excluded_dir in EXCLUDED_DIRECTORIES):
+                continue
+
             level = root.replace(start_dir, "").count(os.sep)
             indent = " " * 4 * level
             tree_lines.append(f"{indent}{os.path.basename(root)}/")
@@ -1498,7 +1510,7 @@ def main(project_id: str, file_name: str = None):
         def model_callback(call_count, call_limit):
             update_model_status(table, project_id, call_count, call_limit, verbose=False)
         
-        model = get_model(api_key=os.getenv("ANTHROPIC_API_KEY"), model_type='bedrock', model_call_cb=model_callback, call_limit=int(os.getenv("MODEL_CALL_LIMIT", 50)))
+        model = get_model(api_key=None, model_type='bedrock', model_call_cb=model_callback, call_limit=int(os.getenv("MODEL_CALL_LIMIT", 50)))
 
         #Start here
         os.chdir(output_directory)
