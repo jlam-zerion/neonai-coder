@@ -14,10 +14,34 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
+    xz-utils \
+    unzip \
+    sudo \
+    wget \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symbolic link for python3
 RUN ln -s /usr/bin/python3 /usr/bin/python
+
+########### Install adtional packges here #########
+# Install Node.js and npm (latest LTS) using package manager
+RUN mkdir -p /etc/apt/keyrings \
+    && wget -O- https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest
+
+# Install Next.js globally
+RUN npm install -g next
+
+# Install Flutter
+# RUN git clone https://github.com/flutter/flutter.git -b stable /usr/opt/flutter
+# ENV PATH="$PATH:/usr/opt/flutter/bin"
+# RUN chown -R $USER:$USER /usr/opt/flutter
+# RUN flutter precache
+########### Install adtional packges here #########
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
